@@ -12,6 +12,7 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 
+from core.config import DEMO_SECRETS
 from core.utils import chat_with_agent
 
 
@@ -36,24 +37,37 @@ def content_filter(response: str) -> dict:
     Returns:
         dict with 'safe', 'issues', and 'redacted' keys
     """
+    response = "" if response is None else str(response)
     issues = []
     redacted = response
 
-    # PII patterns to check
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "Vietnamese phone number": r"(?<!\w)(?:\+?84|0)(?:[ .()-]*\d){9,10}(?!\w)",
+        "email address": r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b",
+        "CCCD/CMND number": r"(?<!\d)(?:\d{9}|\d{12})(?!\d)",
+        "API key": r"\bsk-[A-Za-z0-9_-]{4,}\b",
+        "password disclosure": r"\b(?:admin\s+)?password\b\s*(?:(?:is|was)\s+|[:=]\s*)\S+",
     }
 
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = list(re.finditer(pattern, redacted, re.IGNORECASE))
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Also catch protected values loaded from the demo payload, including
+    # credentials whose format does not match a generic PII pattern.
+    secrets = sorted(
+        {str(secret) for secret in DEMO_SECRETS if secret}, key=len, reverse=True
+    )
+    secret_matches = 0
+    for secret in secrets:
+        found = re.findall(re.escape(secret), redacted, flags=re.IGNORECASE)
+        if found:
+            secret_matches += len(found)
+            redacted = re.sub(re.escape(secret), "[REDACTED]", redacted, flags=re.IGNORECASE)
+    if secret_matches:
+        issues.append(f"demo secret: {secret_matches} found")
 
     return {
         "safe": len(issues) == 0,
@@ -172,16 +186,28 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        filtered = content_filter(response_text)
+        if not filtered["safe"]:
+            original_content = llm_response.content
+            role = getattr(original_content, "role", None) or "model"
+            llm_response.content = types.Content(
+                role=role,
+                parts=[types.Part.from_text(text=filtered["redacted"])],
+            )
+            self.redacted_count += 1
 
-        return llm_response  # TODO: modify if needed
+        if self.use_llm_judge:
+            judge_result = await llm_safety_check(response_text)
+            if not judge_result.get("safe", True):
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="Xin lỗi, phản hồi này không thể được gửi vì không đáp ứng yêu cầu an toàn."
+                    )],
+                )
+                self.blocked_count += 1
+
+        return llm_response
 
 
 # ============================================================

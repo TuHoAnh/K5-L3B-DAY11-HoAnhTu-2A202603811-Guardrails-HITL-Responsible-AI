@@ -1,0 +1,14 @@
+{
+  "total_requests": 28,
+  "blocked_requests": 13,
+  "block_rate": 0.4642857142857143,
+  "rate_limit_hits": 2,
+  "judge_checks": 0,
+  "judge_fails": 0,
+  "judge_fail_rate": 0.0,
+  "latency_total_ms": 281030.47259978484,
+  "latency_avg_ms": 10036.802592849459,
+  "latency_max_ms": 86466.53650002554,
+  "error_count": 2,
+  "alerts": []
+}
